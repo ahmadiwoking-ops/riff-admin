@@ -12,6 +12,8 @@ export default function Admin() {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [search, setSearch] = useState('');
+  const [waitlist, setWaitlist] = useState(null);
+  const [sending, setSending] = useState(false);
 
   async function apiFetch(path, opts = {}) {
     const headers = { 'Content-Type': 'application/json' };
@@ -27,12 +29,29 @@ export default function Admin() {
 
   async function loadAll(t) {
     const h = { Authorization: 'Bearer ' + (t || token) };
-    const [s, f, u] = await Promise.all([
+    const [s, f, u, w] = await Promise.all([
       fetch(API + '/api/admin/stats', { headers: h }).then(r => r.json()).catch(() => ({})),
       fetch(API + '/api/admin/flags', { headers: h }).then(r => r.json()).catch(() => ({ flags: [] })),
       fetch(API + '/api/admin/users', { headers: h }).then(r => r.json()).catch(() => ({ users: [] })),
+      fetch(API + '/api/waitlist', { headers: h }).then(r => r.json()).catch(() => null),
     ]);
-    setStats(s); setFlags(f.flags || []); setUsers(u.users || []);
+    setStats(s); setFlags(f.flags || []); setUsers(u.users || []); setWaitlist(w);
+  }
+
+  async function sendLaunchEmail() {
+    const dry = await apiFetch('/api/waitlist/broadcast', { method: 'POST', body: JSON.stringify({ dryRun: true }) });
+    if (dry.error) { alert(dry.error); return; }
+    if (!dry.wouldSend) { alert('Nobody left to email.'); return; }
+    const msg = 'Send the launch email to ' + dry.wouldSend + ' people?' +
+      (dry.remainingAfter ? ('\n\n' + dry.remainingAfter + ' more would remain for a second run.') : '') +
+      '\n\nThis cannot be undone. Check the App Store and Play links are live first.';
+    if (!confirm(msg)) return;
+    setSending(true);
+    const res = await apiFetch('/api/waitlist/broadcast', { method: 'POST', body: JSON.stringify({}) });
+    setSending(false);
+    if (res.error) { alert(res.error); return; }
+    alert('Sent ' + res.sent + '. Failed ' + (res.failed || []).length + '. Remaining ' + res.remaining + '.');
+    loadAll();
   }
 
   async function resolveFlag(id, action) {
@@ -60,7 +79,7 @@ export default function Admin() {
     <div style={{ display: 'flex', minHeight: '100vh' }}>
       <div style={{ width: 220, background: '#0A0E18', borderRight: '1px solid #1E2740', padding: '20px 16px', flexShrink: 0 }}>
         <h2 style={{ fontSize: 18, fontWeight: 700, marginBottom: 24 }}>🛡 Riff Admin</h2>
-        {['dashboard', 'users', 'flags', 'subscriptions'].map(t => (
+        {['dashboard', 'users', 'flags', 'subscriptions', 'waitlist'].map(t => (
           <div key={t} onClick={() => setTab(t)} style={{ padding: '10px 14px', borderRadius: 8, marginBottom: 4, cursor: 'pointer', background: tab === t ? 'rgba(34,211,238,0.1)' : 'transparent', color: tab === t ? '#22D3EE' : '#64748B', fontSize: 14, textTransform: 'capitalize' }}>{t}</div>
         ))}
         <div onClick={() => { setLoggedIn(false); setToken(''); }} style={{ padding: '10px 14px', cursor: 'pointer', color: '#EF4444', fontSize: 14, marginTop: 20, borderTop: '1px solid #1E2740', paddingTop: 16 }}>Log out</div>
@@ -116,6 +135,30 @@ export default function Admin() {
             {[['Free', users.filter(u => u.plan === 'free').length, '#94A3B8'], ['Explorer', users.filter(u => u.plan === 'explorer').length, '#22D3EE'], ['Inner Circle', users.filter(u => u.plan === 'inner_circle').length, '#F59E0B']].map(([n, c, col]) => (
               <div key={n} style={card}><div style={{ fontSize: 12, color: '#64748B', marginBottom: 8 }}>{n}</div><div style={{ fontSize: 36, fontWeight: 800, color: col }}>{c}</div></div>
             ))}
+          </div>
+        </div>}
+        {tab === 'waitlist' && <div>
+          <h1 style={{ fontSize: 24, fontWeight: 700, marginBottom: 16 }}>Launch waiting list</h1>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 16, marginBottom: 24 }}>
+            {[['Total', waitlist ? waitlist.total : 0, '#E2E8F0'], ['Not yet emailed', waitlist ? waitlist.pending : 0, '#22D3EE'], ['Emailed', waitlist ? waitlist.notified : 0, '#4ADE80'], ['Unsubscribed', waitlist ? waitlist.unsubbed : 0, '#94A3B8']].map(([n, c, col]) => (
+              <div key={n} style={card}><div style={{ fontSize: 12, color: '#64748B', marginBottom: 8 }}>{n}</div><div style={{ fontSize: 32, fontWeight: 800, color: col }}>{c}</div></div>
+            ))}
+          </div>
+          <button onClick={sendLaunchEmail} disabled={sending || !waitlist || !waitlist.pending} style={{ padding: '12px 22px', borderRadius: 10, border: 'none', background: (!waitlist || !waitlist.pending) ? '#1E2740' : '#8B5CF6', color: (!waitlist || !waitlist.pending) ? '#64748B' : '#fff', fontSize: 14, fontWeight: 700, cursor: (sending || !waitlist || !waitlist.pending) ? 'default' : 'pointer', marginBottom: 24 }}>
+            {sending ? 'Sending…' : 'Send launch announcement'}
+          </button>
+          <div style={{ fontSize: 12, color: '#64748B', marginBottom: 20 }}>Sends only to people who have not had it and have not opted out. Safe to run more than once.</div>
+          <div style={card}>
+            {waitlist && waitlist.entries && waitlist.entries.length ? waitlist.entries.map(e => (
+              <div key={e.id} style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '10px 0', borderBottom: '1px solid #1E2740', fontSize: 13 }}>
+                <div style={{ flex: 1, color: '#E2E8F0' }}>{e.email}</div>
+                <div style={{ width: 110, color: '#64748B' }}>{e.source || '—'}</div>
+                <div style={{ width: 90, color: '#64748B' }}>{new Date(e.createdAt).toLocaleDateString()}</div>
+                <div style={{ width: 100, textAlign: 'right', color: e.unsubbed ? '#94A3B8' : e.notified ? '#4ADE80' : '#22D3EE' }}>
+                  {e.unsubbed ? 'unsubscribed' : e.notified ? 'emailed' : 'waiting'}
+                </div>
+              </div>
+            )) : <div style={{ color: '#64748B', fontSize: 13 }}>Nobody on the list yet.</div>}
           </div>
         </div>}
       </div>
